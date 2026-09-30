@@ -127,6 +127,7 @@ int main(void)
     uint8_t recovered[12 + 188];
     size_t recovered_len = 0;
     s2022_status status;
+    s2022_receiver_stats stats;
     size_t i;
 
     memset(&cap, 0, sizeof(cap));
@@ -209,6 +210,59 @@ int main(void)
     if (expect(rcap.len == sizeof(media[2]) &&
                memcmp(rcap.packet, media[2], sizeof(media[2])) == 0,
                "receiver recovered packet bytes")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    status = s2022_receiver_get_stats(receiver, &stats);
+    if (expect(status == S2022_OK, "receiver stats query")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    if (expect(stats.reset_time != (time_t)0 && stats.sampled_time >= stats.reset_time,
+               "receiver stats timestamps")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    if (expect(stats.media_packets_processed == 3u &&
+               stats.media_bytes_processed == 3u * (uint64_t)sizeof(media[0]),
+               "receiver media byte stats")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    if (expect(stats.fec_packets_processed == 1u &&
+               stats.fec_bytes_processed == (uint64_t)cap.lens[0],
+               "receiver FEC byte stats")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    if (expect(stats.recovery_attempts == 1u &&
+               stats.recovered_packets == 1u &&
+               stats.recovered_bytes == (uint64_t)sizeof(media[2]) &&
+               stats.recovery_failed_packets == 0u &&
+               stats.recovery_error_rate == 0.0,
+               "receiver recovery stats")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    s2022_receiver_reset_stats(receiver);
+    status = s2022_receiver_get_stats(receiver, &stats);
+    if (expect(status == S2022_OK &&
+               stats.media_packets_processed == 0u &&
+               stats.media_bytes_processed == 0u &&
+               stats.fec_packets_processed == 0u &&
+               stats.fec_bytes_processed == 0u &&
+               stats.recovery_attempts == 0u &&
+               stats.recovered_packets == 0u &&
+               stats.recovered_bytes == 0u &&
+               stats.recovery_failed_packets == 0u &&
+               stats.recovery_error_rate == 0.0,
+               "receiver stats reset")) {
         s2022_receiver_destroy(receiver);
         s2022_encoder_destroy(encoder);
         return 1;

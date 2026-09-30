@@ -5,6 +5,11 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#if defined(_MSC_VER)
+#include <windows.h>
+#endif
 
 #define S2022_MAX_BLOCK_PACKETS 100u
 #define S2022_MIN_L 4u
@@ -62,7 +67,77 @@ struct s2022_receiver {
     uint16_t extension_words;
     uint8_t have_level_a_stream;
     s2022_fec_type level_a_stream;
+    s2022_receiver_stats stats;
 };
+
+static void stats_add_u64(uint64_t *value, uint64_t delta)
+{
+#if defined(_MSC_VER)
+    InterlockedExchangeAdd64((volatile LONG64 *)value, (LONG64)delta);
+#else
+    __atomic_add_fetch(value, delta, __ATOMIC_RELAXED);
+#endif
+}
+
+static uint64_t stats_load_u64(const uint64_t *value)
+{
+#if defined(_MSC_VER)
+    return (uint64_t)InterlockedCompareExchange64((volatile LONG64 *)value, 0, 0);
+#else
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+#endif
+}
+
+static void stats_store_u64(uint64_t *value, uint64_t new_value)
+{
+#if defined(_MSC_VER)
+    InterlockedExchange64((volatile LONG64 *)value, (LONG64)new_value);
+#else
+    __atomic_store_n(value, new_value, __ATOMIC_RELAXED);
+#endif
+}
+
+static time_t stats_load_time(const time_t *value)
+{
+#if defined(_MSC_VER)
+    if (sizeof(time_t) == sizeof(LONG64)) {
+        return (time_t)InterlockedCompareExchange64((volatile LONG64 *)value, 0, 0);
+    }
+    return (time_t)InterlockedCompareExchange((volatile LONG *)value, 0, 0);
+#else
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+#endif
+}
+
+static void stats_store_time(time_t *value, time_t new_value)
+{
+#if defined(_MSC_VER)
+    if (sizeof(time_t) == sizeof(LONG64)) {
+        InterlockedExchange64((volatile LONG64 *)value, (LONG64)new_value);
+    } else {
+        InterlockedExchange((volatile LONG *)value, (LONG)new_value);
+    }
+#else
+    __atomic_store_n(value, new_value, __ATOMIC_RELAXED);
+#endif
+}
+
+static void stats_reset_receiver(s2022_receiver_stats *stats)
+{
+    time_t now = time(NULL);
+
+    stats_store_u64(&stats->media_packets_processed, 0);
+    stats_store_u64(&stats->media_bytes_processed, 0);
+    stats_store_u64(&stats->fec_packets_processed, 0);
+    stats_store_u64(&stats->fec_bytes_processed, 0);
+    stats_store_u64(&stats->recovery_attempts, 0);
+    stats_store_u64(&stats->recovered_packets, 0);
+    stats_store_u64(&stats->recovered_bytes, 0);
+    stats_store_u64(&stats->recovery_failed_packets, 0);
+    stats_store_time(&stats->reset_time, now);
+    stats_store_time(&stats->sampled_time, now);
+    stats->recovery_error_rate = 0.0;
+}
 
 static uint16_t read_u16(const uint8_t *p)
 {
@@ -913,6 +988,7 @@ s2022_status s2022_receiver_create(const s2022_config *config, s2022_receiver **
 
     ctx->config = local_config;
     ctx->store_capacity = store_capacity;
+    stats_reset_receiver(&ctx->stats);
     *receiver = ctx;
     return S2022_OK;
 }
@@ -961,11 +1037,19 @@ s2022_status s2022_receiver_push_media(s2022_receiver *receiver,
                                        const uint8_t *rtp_packet,
                                        size_t rtp_packet_len)
 {
+    s2022_status status;
+
     if (!receiver) {
         return S2022_ERROR_INVALID_ARGUMENT;
     }
 
-    return receiver_store_packet(receiver, rtp_packet, rtp_packet_len);
+    status = receiver_store_packet(receiver, rtp_packet, rtp_packet_len);
+    if (status == S2022_OK) {
+        stats_add_u64(&receiver->stats.media_packets_processed, 1);
+        stats_add_u64(&receiver->stats.media_bytes_processed, (uint64_t)rtp_packet_len);
+    }
+
+    return status;
 }
 
 s2022_status s2022_receiver_push_fec(s2022_receiver *receiver,
@@ -1025,6 +1109,9 @@ s2022_status s2022_receiver_push_fec(s2022_receiver *receiver,
         }
     }
 
+    stats_add_u64(&receiver->stats.fec_packets_processed, 1);
+    stats_add_u64(&receiver->stats.fec_bytes_processed, (uint64_t)fec_packet_len);
+
     payload_recovery_len = fec_packet_len - S2022_FEC_PACKET_OVERHEAD;
     status = receiver_ensure_storage(receiver, S2022_RTP_HEADER_SIZE + payload_recovery_len);
     if (status != S2022_OK) {
@@ -1061,7 +1148,10 @@ s2022_status s2022_receiver_push_fec(s2022_receiver *receiver,
         return S2022_OK;
     }
 
+    stats_add_u64(&receiver->stats.recovery_attempts, 1);
+
     if (missing_count > 1u) {
+        stats_add_u64(&receiver->stats.recovery_failed_packets, 1);
         free(media_packets);
         free(recovered);
         return S2022_ERROR_NOT_READY;
@@ -1077,10 +1167,53 @@ s2022_status s2022_receiver_push_fec(s2022_receiver *receiver,
             callback(callback_user, recovered, recovered_len);
         }
     }
+    if (status == S2022_OK) {
+        stats_add_u64(&receiver->stats.recovered_packets, 1);
+        stats_add_u64(&receiver->stats.recovered_bytes, (uint64_t)recovered_len);
+    } else {
+        stats_add_u64(&receiver->stats.recovery_failed_packets, 1);
+    }
 
     free(media_packets);
     free(recovered);
     return status;
+}
+
+s2022_status s2022_receiver_get_stats(s2022_receiver *receiver,
+                                      s2022_receiver_stats *stats)
+{
+    uint64_t attempts;
+    uint64_t failures;
+
+    if (!receiver || !stats) {
+        return S2022_ERROR_INVALID_ARGUMENT;
+    }
+
+    memset(stats, 0, sizeof(*stats));
+    stats->reset_time = stats_load_time(&receiver->stats.reset_time);
+    stats->sampled_time = time(NULL);
+    stats->media_packets_processed = stats_load_u64(&receiver->stats.media_packets_processed);
+    stats->media_bytes_processed = stats_load_u64(&receiver->stats.media_bytes_processed);
+    stats->fec_packets_processed = stats_load_u64(&receiver->stats.fec_packets_processed);
+    stats->fec_bytes_processed = stats_load_u64(&receiver->stats.fec_bytes_processed);
+    stats->recovery_attempts = stats_load_u64(&receiver->stats.recovery_attempts);
+    stats->recovered_packets = stats_load_u64(&receiver->stats.recovered_packets);
+    stats->recovered_bytes = stats_load_u64(&receiver->stats.recovered_bytes);
+    stats->recovery_failed_packets = stats_load_u64(&receiver->stats.recovery_failed_packets);
+
+    attempts = stats->recovery_attempts;
+    failures = stats->recovery_failed_packets;
+    stats->recovery_error_rate = attempts == 0u ? 0.0 : (double)failures / (double)attempts;
+    return S2022_OK;
+}
+
+void s2022_receiver_reset_stats(s2022_receiver *receiver)
+{
+    if (!receiver) {
+        return;
+    }
+
+    stats_reset_receiver(&receiver->stats);
 }
 
 const char *s2022_status_string(s2022_status status)

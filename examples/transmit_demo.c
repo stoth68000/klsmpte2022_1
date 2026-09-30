@@ -327,45 +327,90 @@ static void set_port(destination *dst, unsigned int port)
     }
 }
 
-static int create_socket(const destination *dst, unsigned int source_port, unsigned int ttl)
+static int source_port_conflicts(unsigned int source_port, unsigned int base_port)
+{
+    return source_port == base_port ||
+           source_port == base_port + 2u ||
+           source_port == base_port + 4u;
+}
+
+static unsigned int socket_local_port(int fd, int family)
+{
+    if (family == AF_INET) {
+        struct sockaddr_in local;
+        socklen_t len = (socklen_t)sizeof(local);
+
+        if (getsockname(fd, (struct sockaddr *)&local, &len) == 0) {
+            return ntohs(local.sin_port);
+        }
+    } else if (family == AF_INET6) {
+        struct sockaddr_in6 local6;
+        socklen_t len = (socklen_t)sizeof(local6);
+
+        if (getsockname(fd, (struct sockaddr *)&local6, &len) == 0) {
+            return ntohs(local6.sin6_port);
+        }
+    }
+
+    return 0;
+}
+
+static int create_socket(const destination *dst,
+                         unsigned int source_port,
+                         unsigned int ttl,
+                         unsigned int base_port)
 {
     int fd;
     int hop_limit = (int)ttl;
+    unsigned int attempts;
 
-    fd = socket(dst->addr.ss_family, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        perror("socket");
-        return -1;
-    }
+    for (attempts = 0; attempts < 32u; ++attempts) {
+        unsigned int local_port;
 
-    if (dst->addr.ss_family == AF_INET) {
-        struct sockaddr_in local;
-        memset(&local, 0, sizeof(local));
-        local.sin_family = AF_INET;
-        local.sin_addr.s_addr = htonl(INADDR_ANY);
-        local.sin_port = htons((uint16_t)source_port);
-        if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0) {
-            perror("bind");
-            close(fd);
+        fd = socket(dst->addr.ss_family, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            perror("socket");
             return -1;
         }
-        (void)setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &hop_limit, sizeof(hop_limit));
-        (void)setsockopt(fd, IPPROTO_IP, IP_TTL, &hop_limit, sizeof(hop_limit));
-    } else if (dst->addr.ss_family == AF_INET6) {
-        struct sockaddr_in6 local6;
-        memset(&local6, 0, sizeof(local6));
-        local6.sin6_family = AF_INET6;
-        local6.sin6_port = htons((uint16_t)source_port);
-        if (bind(fd, (struct sockaddr *)&local6, sizeof(local6)) != 0) {
-            perror("bind");
-            close(fd);
-            return -1;
+
+        if (dst->addr.ss_family == AF_INET) {
+            struct sockaddr_in local;
+            memset(&local, 0, sizeof(local));
+            local.sin_family = AF_INET;
+            local.sin_addr.s_addr = htonl(INADDR_ANY);
+            local.sin_port = htons((uint16_t)source_port);
+            if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0) {
+                perror("bind");
+                close(fd);
+                return -1;
+            }
+            (void)setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &hop_limit, sizeof(hop_limit));
+            (void)setsockopt(fd, IPPROTO_IP, IP_TTL, &hop_limit, sizeof(hop_limit));
+        } else if (dst->addr.ss_family == AF_INET6) {
+            struct sockaddr_in6 local6;
+            memset(&local6, 0, sizeof(local6));
+            local6.sin6_family = AF_INET6;
+            local6.sin6_port = htons((uint16_t)source_port);
+            if (bind(fd, (struct sockaddr *)&local6, sizeof(local6)) != 0) {
+                perror("bind");
+                close(fd);
+                return -1;
+            }
+            (void)setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hop_limit, sizeof(hop_limit));
+            (void)setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hop_limit, sizeof(hop_limit));
         }
-        (void)setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hop_limit, sizeof(hop_limit));
-        (void)setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hop_limit, sizeof(hop_limit));
+
+        local_port = socket_local_port(fd, dst->addr.ss_family);
+        if (source_port != 0u || !source_port_conflicts(local_port, base_port)) {
+            return fd;
+        }
+
+        close(fd);
     }
 
-    return fd;
+    fprintf(stderr, "could not allocate a source port outside %u/%u/%u\n",
+            base_port, base_port + 2u, base_port + 4u);
+    return -1;
 }
 
 static int send_packet(int fd, const destination *dst, const uint8_t *packet, size_t packet_len)
@@ -514,7 +559,7 @@ int main(int argc, char **argv)
     set_port(&ctx.second_fec, base_port + 4u);
     ctx.first_count = 0;
     ctx.second_count = 0;
-    ctx.fd = create_socket(&media, opts.source_port, opts.ttl);
+    ctx.fd = create_socket(&media, opts.source_port, opts.ttl, base_port);
     if (ctx.fd < 0) {
         return 1;
     }

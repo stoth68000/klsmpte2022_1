@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -171,6 +172,39 @@ typedef struct s2022_fec_info {
 
 /** @brief Opaque FEC receiver context. */
 typedef struct s2022_receiver s2022_receiver;
+
+/**
+ * @brief Receiver statistics snapshot.
+ *
+ * All counters are maintained by the receiver context and may be queried from
+ * a monitoring thread. The timestamps allow applications to compute rates over
+ * a known interval. @ref recovery_error_rate is recovery_failed_packets divided
+ * by recovery_attempts, or 0.0 when no recovery has been attempted.
+ */
+typedef struct s2022_receiver_stats {
+    /** Time when the current statistics interval began. */
+    time_t reset_time;
+    /** Time when this snapshot was taken. */
+    time_t sampled_time;
+    /** Successfully processed media RTP packets. */
+    uint64_t media_packets_processed;
+    /** Bytes in successfully processed media RTP packets. */
+    uint64_t media_bytes_processed;
+    /** Successfully processed FEC RTP packets. */
+    uint64_t fec_packets_processed;
+    /** Bytes in successfully processed FEC RTP packets. */
+    uint64_t fec_bytes_processed;
+    /** FEC packets that attempted to recover one or more missing media packets. */
+    uint64_t recovery_attempts;
+    /** Media RTP packets recovered by FEC. */
+    uint64_t recovered_packets;
+    /** Bytes in recovered media RTP packets. */
+    uint64_t recovered_bytes;
+    /** Recovery attempts that could not reconstruct a media RTP packet. */
+    uint64_t recovery_failed_packets;
+    /** recovery_failed_packets / recovery_attempts, or 0.0 with no attempts. */
+    double recovery_error_rate;
+} s2022_receiver_stats;
 
 /**
  * @brief Callback invoked when the receiver reconstructs a missing RTP packet.
@@ -346,6 +380,29 @@ s2022_status s2022_receiver_push_fec(s2022_receiver *receiver,
                                      size_t fec_packet_len,
                                      s2022_recovered_packet_cb callback,
                                      void *callback_user);
+
+/**
+ * @brief Query a thread-safe snapshot of receiver statistics.
+ *
+ * This function is safe to call from a monitoring thread while another thread
+ * is feeding packets into the same receiver context.
+ *
+ * @param[in] receiver Receiver context.
+ * @param[out] stats Receives the statistics snapshot.
+ * @return S2022_OK on success, otherwise an error status.
+ */
+s2022_status s2022_receiver_get_stats(s2022_receiver *receiver,
+                                      s2022_receiver_stats *stats);
+
+/**
+ * @brief Reset receiver statistics and start a new statistics interval.
+ *
+ * This function is safe to call from a monitoring thread while another thread
+ * is feeding packets into the same receiver context.
+ *
+ * @param[in,out] receiver Receiver context.
+ */
+void s2022_receiver_reset_stats(s2022_receiver *receiver);
 
 /**
  * @brief Convert a status code to a short static string.

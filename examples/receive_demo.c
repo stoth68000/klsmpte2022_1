@@ -44,6 +44,7 @@ typedef struct options {
     unsigned int latency_packets;
     unsigned int socket_buffer;
     unsigned int drop_every;
+    unsigned int stats_interval_seconds;
     s2022_fec_mode mode;
 } options;
 
@@ -97,6 +98,7 @@ static void usage(const char *argv0)
             "  --duration SEC         Run time in seconds, 0 means forever (default 0)\n"
             "  --socket-buffer BYTES  Requested receive socket buffer size (default OS value)\n"
             "  --drop-every COUNT     Test aid: discard every Nth media packet before FEC\n"
+            "  --stats-interval SEC   Print library receiver stats every N seconds (default 0)\n"
             "  --help                 Show this help\n"
             "\n"
             "The receiver listens for media on PORT, first-stream FEC on PORT+2,\n"
@@ -161,6 +163,7 @@ static int parse_options(int argc, char **argv, options *opts)
     opts->latency_packets = DEFAULT_LATENCY_PACKETS;
     opts->socket_buffer = 0;
     opts->drop_every = 0;
+    opts->stats_interval_seconds = 0;
     opts->mode = S2022_FEC_MODE_LEVEL_B;
 
     for (i = 1; i < argc; ++i) {
@@ -205,6 +208,10 @@ static int parse_options(int argc, char **argv, options *opts)
             }
         } else if (strcmp(argv[i], "--drop-every") == 0 && i + 1 < argc) {
             if (parse_uint(argv[++i], 0, UINT_MAX, &opts->drop_every) != 0) {
+                return -1;
+            }
+        } else if (strcmp(argv[i], "--stats-interval") == 0 && i + 1 < argc) {
+            if (parse_uint(argv[++i], 0, UINT_MAX, &opts->stats_interval_seconds) != 0) {
                 return -1;
             }
         } else {
@@ -318,7 +325,7 @@ static int create_receive_socket(const char *host,
     local.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0) {
-        perror("bind");
+        fprintf(stderr, "bind udp port %u failed: %s\n", port, strerror(errno));
         close(fd);
         return -1;
     }
@@ -425,6 +432,34 @@ static void on_recovered(void *user, const uint8_t *packet, size_t packet_len)
     }
 }
 
+static void print_receiver_stats(s2022_receiver *receiver)
+{
+    s2022_receiver_stats stats;
+    s2022_status status;
+
+    status = s2022_receiver_get_stats(receiver, &stats);
+    if (status != S2022_OK) {
+        fprintf(stderr, "receiver stats failed: %s\n", s2022_status_string(status));
+        return;
+    }
+
+    fprintf(stderr,
+            "Stats since %lld sampled %lld: media=%" PRIu64 " packets/%" PRIu64 " bytes, "
+            "fec=%" PRIu64 " packets/%" PRIu64 " bytes, recovered=%" PRIu64 " packets/%" PRIu64
+            " bytes, attempts=%" PRIu64 ", failed=%" PRIu64 ", error-rate=%.6f\n",
+            (long long)stats.reset_time,
+            (long long)stats.sampled_time,
+            stats.media_packets_processed,
+            stats.media_bytes_processed,
+            stats.fec_packets_processed,
+            stats.fec_bytes_processed,
+            stats.recovered_packets,
+            stats.recovered_bytes,
+            stats.recovery_attempts,
+            stats.recovery_failed_packets,
+            stats.recovery_error_rate);
+}
+
 int main(int argc, char **argv)
 {
     options opts;
@@ -444,6 +479,8 @@ int main(int argc, char **argv)
     uint64_t simulated_drops = 0;
     uint64_t start_ns;
     uint64_t stop_ns;
+    uint64_t next_stats_ns;
+    uint64_t stats_interval_ns;
     int parsed;
     s2022_status status;
 
@@ -542,6 +579,8 @@ int main(int argc, char **argv)
     start_ns = now_ns();
     stop_ns = opts.duration_seconds == 0 ? UINT64_MAX :
         start_ns + ((uint64_t)opts.duration_seconds * 1000000000ull);
+    stats_interval_ns = (uint64_t)opts.stats_interval_seconds * 1000000000ull;
+    next_stats_ns = opts.stats_interval_seconds == 0 ? UINT64_MAX : start_ns + stats_interval_ns;
 
     fprintf(stderr,
             "Receiving RTP MPEG-TS from udp://%s:%u, FEC %s L=%u D=%u, latency=%u packets\n",
@@ -554,6 +593,7 @@ int main(int argc, char **argv)
         fd_set read_fds;
         struct timeval timeout;
         int ready;
+        uint64_t current_ns;
 
         FD_ZERO(&read_fds);
         FD_SET(media_fd, &read_fds);
@@ -563,6 +603,14 @@ int main(int argc, char **argv)
         timeout.tv_usec = 100000;
 
         ready = select(max_fd + 1, &read_fds, NULL, NULL, &timeout);
+        current_ns = now_ns();
+        if (current_ns >= next_stats_ns) {
+            print_receiver_stats(receiver);
+            do {
+                next_stats_ns += stats_interval_ns;
+            } while (current_ns >= next_stats_ns);
+        }
+
         if (ready < 0) {
             if (errno == EINTR) {
                 continue;

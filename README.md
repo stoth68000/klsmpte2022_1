@@ -12,6 +12,7 @@ The library does not own sockets. Applications feed RTP MPEG-TS packets into an 
 - Sender modes for disabled FEC, Level A, and Level B operation.
 - Single-packet recovery helper for a FEC packet when exactly one protected RTP packet is missing.
 - Receiver state that buffers RTP media packets and recovers from FEC packets using `SNBase`, `Offset`, and `NA`.
+- Thread-safe receiver statistics snapshots for processed media/FEC bytes, recovered bytes, recovery attempts, and recovery error rate.
 - No external runtime dependencies.
 
 ## License
@@ -119,6 +120,8 @@ The SMPTE ST 2022-1 FEC RTP payload type is fixed to 96 and the FEC RTP SSRC is 
 Level A emits only the first FEC stream. Level B emits the first and second FEC streams. Disabled mode validates RTP input but emits no FEC packets. First-stream FEC is delayed until at least `L` media packets after the last protected media packet, as required by ST 2022-1 traffic shaping. `s2022_encoder_flush()` drains queued first-stream FEC only after that delay has elapsed; otherwise it returns `S2022_ERROR_NOT_READY`. A Level A receiver auto-selects the first FEC stream it receives by default, or can be pinned to the first or second stream with `receiver_stream`.
 
 When RTP header extensions are present, recovery callbacks return a normalized RTP packet containing the fixed RTP header and recovered MPEG-TS payload. The extension bit is cleared because the RTP extension header bytes are not protected by ST 2022-1 FEC.
+
+Receivers also expose `s2022_receiver_get_stats()` and `s2022_receiver_reset_stats()`. The snapshot includes `reset_time` and `sampled_time` so applications can compute packet and byte rates over their own reporting windows.
 
 ## Notes
 
