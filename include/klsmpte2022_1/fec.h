@@ -178,8 +178,10 @@ typedef struct s2022_receiver s2022_receiver;
  *
  * All counters are maintained by the receiver context and may be queried from
  * a monitoring thread. The timestamps allow applications to compute rates over
- * a known interval. @ref recovery_error_rate is recovery_failed_packets divided
- * by recovery_attempts, or 0.0 when no recovery has been attempted.
+ * a known interval. Deferred recoveries are FEC packets that arrived before
+ * enough peer media packets were available; they are not counted as failed
+ * recoveries. @ref recovery_error_rate is recovery_failed_packets divided by
+ * recovery_attempts, or 0.0 when no recovery has been attempted.
  */
 typedef struct s2022_receiver_stats {
     /** Time when the current statistics interval began. */
@@ -194,8 +196,10 @@ typedef struct s2022_receiver_stats {
     uint64_t fec_packets_processed;
     /** Bytes in successfully processed FEC RTP packets. */
     uint64_t fec_bytes_processed;
-    /** FEC packets that attempted to recover one or more missing media packets. */
+    /** FEC packets where exactly one missing media packet was eligible for repair. */
     uint64_t recovery_attempts;
+    /** FEC packets received before enough peer media packets were available. */
+    uint64_t recovery_deferred_packets;
     /** Media RTP packets recovered by FEC. */
     uint64_t recovered_packets;
     /** Bytes in recovered media RTP packets. */

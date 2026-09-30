@@ -131,6 +131,7 @@ static void stats_reset_receiver(s2022_receiver_stats *stats)
     stats_store_u64(&stats->fec_packets_processed, 0);
     stats_store_u64(&stats->fec_bytes_processed, 0);
     stats_store_u64(&stats->recovery_attempts, 0);
+    stats_store_u64(&stats->recovery_deferred_packets, 0);
     stats_store_u64(&stats->recovered_packets, 0);
     stats_store_u64(&stats->recovered_bytes, 0);
     stats_store_u64(&stats->recovery_failed_packets, 0);
@@ -1148,14 +1149,14 @@ s2022_status s2022_receiver_push_fec(s2022_receiver *receiver,
         return S2022_OK;
     }
 
-    stats_add_u64(&receiver->stats.recovery_attempts, 1);
-
     if (missing_count > 1u) {
-        stats_add_u64(&receiver->stats.recovery_failed_packets, 1);
+        stats_add_u64(&receiver->stats.recovery_deferred_packets, 1);
         free(media_packets);
         free(recovered);
         return S2022_ERROR_NOT_READY;
     }
+
+    stats_add_u64(&receiver->stats.recovery_attempts, 1);
 
     recovered_len = 0;
     status = s2022_recover_media_packet(fec_packet, fec_packet_len,
@@ -1197,6 +1198,8 @@ s2022_status s2022_receiver_get_stats(s2022_receiver *receiver,
     stats->fec_packets_processed = stats_load_u64(&receiver->stats.fec_packets_processed);
     stats->fec_bytes_processed = stats_load_u64(&receiver->stats.fec_bytes_processed);
     stats->recovery_attempts = stats_load_u64(&receiver->stats.recovery_attempts);
+    stats->recovery_deferred_packets =
+        stats_load_u64(&receiver->stats.recovery_deferred_packets);
     stats->recovered_packets = stats_load_u64(&receiver->stats.recovered_packets);
     stats->recovered_bytes = stats_load_u64(&receiver->stats.recovered_bytes);
     stats->recovery_failed_packets = stats_load_u64(&receiver->stats.recovery_failed_packets);

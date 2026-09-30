@@ -446,7 +446,8 @@ static void print_receiver_stats(s2022_receiver *receiver)
     fprintf(stderr,
             "Stats since %lld sampled %lld: media=%" PRIu64 " packets/%" PRIu64 " bytes, "
             "fec=%" PRIu64 " packets/%" PRIu64 " bytes, recovered=%" PRIu64 " packets/%" PRIu64
-            " bytes, attempts=%" PRIu64 ", failed=%" PRIu64 ", error-rate=%.6f\n",
+            " bytes, attempts=%" PRIu64 ", deferred=%" PRIu64 ", failed=%" PRIu64
+            ", error-rate=%.6f\n",
             (long long)stats.reset_time,
             (long long)stats.sampled_time,
             stats.media_packets_processed,
@@ -456,6 +457,7 @@ static void print_receiver_stats(s2022_receiver *receiver)
             stats.recovered_packets,
             stats.recovered_bytes,
             stats.recovery_attempts,
+            stats.recovery_deferred_packets,
             stats.recovery_failed_packets,
             stats.recovery_error_rate);
 }

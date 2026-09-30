@@ -241,6 +241,7 @@ int main(void)
         return 1;
     }
     if (expect(stats.recovery_attempts == 1u &&
+               stats.recovery_deferred_packets == 0u &&
                stats.recovered_packets == 1u &&
                stats.recovered_bytes == (uint64_t)sizeof(media[2]) &&
                stats.recovery_failed_packets == 0u &&
@@ -258,6 +259,7 @@ int main(void)
                stats.fec_packets_processed == 0u &&
                stats.fec_bytes_processed == 0u &&
                stats.recovery_attempts == 0u &&
+               stats.recovery_deferred_packets == 0u &&
                stats.recovered_packets == 0u &&
                stats.recovered_bytes == 0u &&
                stats.recovery_failed_packets == 0u &&
@@ -305,6 +307,56 @@ int main(void)
         return 1;
     }
     s2022_encoder_destroy(encoder);
+    encoder = NULL;
+
+    memset(&cap, 0, sizeof(cap));
+    memset(&rcap, 0, sizeof(rcap));
+    status = s2022_encoder_create(&config, &encoder);
+    if (expect(status == S2022_OK, "encoder create for deferred stats")) {
+        return 1;
+    }
+    for (i = 0; i < 25; ++i) {
+        make_rtp(media[i], (uint16_t)(1500 + i), 95000u + (uint32_t)i, (uint8_t)i);
+        status = s2022_encoder_push_rtp(encoder, media[i], sizeof(media[i]), on_fec, &cap);
+        if (expect(status == S2022_OK, "encoder push for deferred stats")) {
+            s2022_encoder_destroy(encoder);
+            return 1;
+        }
+    }
+    if (expect(cap.count >= 1u, "encoder emitted FEC for deferred stats")) {
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    status = s2022_receiver_create(&config, &receiver);
+    if (expect(status == S2022_OK, "receiver create for deferred stats")) {
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    status = s2022_receiver_push_fec(receiver, cap.packets[0], cap.lens[0], on_recovered, &rcap);
+    if (expect(status == S2022_ERROR_NOT_READY, "deferred FEC returns not ready")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    status = s2022_receiver_get_stats(receiver, &stats);
+    if (expect(status == S2022_OK, "deferred receiver stats query")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    if (expect(stats.recovery_attempts == 0u &&
+               stats.recovery_deferred_packets == 1u &&
+               stats.recovery_failed_packets == 0u &&
+               stats.recovery_error_rate == 0.0,
+               "deferred recovery is not a failed attempt")) {
+        s2022_receiver_destroy(receiver);
+        s2022_encoder_destroy(encoder);
+        return 1;
+    }
+    s2022_receiver_destroy(receiver);
+    receiver = NULL;
+    s2022_encoder_destroy(encoder);
+    encoder = NULL;
 
     memset(&cap, 0, sizeof(cap));
     s2022_config_init(&config);
